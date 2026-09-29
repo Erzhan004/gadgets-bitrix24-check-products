@@ -1,0 +1,7 @@
+/vendor/
+.env
+.phpunit.cache/
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/locks/*
+!/storage/locks/.gitkeep
