@@ -10,20 +10,11 @@ final class ProductComparisonService
 {
     /**
      * Слова, которые не меняют товар: 5G, Dual SIM и похожие пометки.
-     * Ultra/Plus/Pro/Max/FE не входят сюда.
+     * Ultra/Plus/Pro/Max/FE не входят сюда. SIM сравнивается отдельным полем.
      *
      * @var array<int, string>
      */
     private const NOISE_TOKENS = ['5g', '4g', 'lte', 'wifi', 'nfc', 'dual', 'sim', 'esim'];
-
-    private readonly int $threshold;
-
-    public function __construct(int $modelSimilarityThreshold = 90)
-    {
-        $this->threshold = ($modelSimilarityThreshold >= 1 && $modelSimilarityThreshold <= 100)
-            ? $modelSimilarityThreshold
-            : 90;
-    }
 
     /**
      * Соответствие ищется по модели и характеристикам, а не по позиции в массиве.
@@ -155,7 +146,9 @@ final class ProductComparisonService
         $score += $this->specScore($kaspi->ram, $bitrix->ram, 35);
         $score += $this->specScore($kaspi->storage, $bitrix->storage, 35);
         $score += $this->specScore($kaspi->color, $bitrix->color, 20);
-        $score += $this->modelSimilarity($kaspi->model, $bitrix->model) * 0.25;
+        $score += $this->specScore($kaspi->sim, $bitrix->sim, 10);
+        $score += $this->modelsMatch($kaspi, $bitrix) ? 25 : 0;
+        $score += $this->modelSimilarity($kaspi, $bitrix) * 0.25;
 
         return $score;
     }
@@ -197,7 +190,7 @@ final class ProductComparisonService
             );
         }
 
-        if (! $this->modelsMatch($kaspi->model, $bitrix->model)) {
+        if (! $this->modelsMatch($kaspi, $bitrix)) {
             $differences[] = $this->difference(
                 'model',
                 $kaspi->model,
@@ -230,6 +223,15 @@ final class ProductComparisonService
                 $kaspi->color,
                 $bitrix->color,
                 $prefix.'Цвет: Kaspi '.$this->display($kaspi->color).' / Bitrix '.$this->display($bitrix->color),
+            );
+        }
+
+        if (! $this->simCompatible($kaspi->sim, $bitrix->sim)) {
+            $differences[] = $this->difference(
+                'sim',
+                $kaspi->sim,
+                $bitrix->sim,
+                $prefix.'SIM: Kaspi '.$this->display($kaspi->sim).' / Bitrix '.$this->display($bitrix->sim),
             );
         }
 
@@ -273,149 +275,76 @@ final class ProductComparisonService
     }
 
     /**
-     * Номера в модели (S26, Pro 2) сравниваются точно.
-     * Похожесть текста включается только после этого, чтобы S25 не совпал с S26.
+     * SIM указывают не во всех названиях, поэтому расхождение — только когда SIM есть с обеих сторон.
      */
-    private function modelsMatch(?string $left, ?string $right): bool
+    private function simCompatible(?string $left, ?string $right): bool
     {
-        $leftTokens = $this->modelTokens($left);
-        $rightTokens = $this->modelTokens($right);
-
-        if ($leftTokens === [] && $rightTokens === []) {
+        if ($left === null || $left === '' || $right === null || $right === '') {
             return true;
         }
 
-        if ($leftTokens === [] || $rightTokens === []) {
-            return false;
-        }
-
-        if ($this->numericTokens($leftTokens) !== $this->numericTokens($rightTokens)) {
-            return false;
-        }
-
-        $leftText = implode(' ', $leftTokens);
-        $rightText = implode(' ', $rightTokens);
-
-        if ($leftText === $rightText) {
-            return true;
-        }
-
-        similar_text($leftText, $rightText, $percent);
-
-        if ($percent < $this->threshold) {
-            return false;
-        }
-
-        return $this->tokensAlign($leftTokens, $rightTokens);
+        return $left === $right;
     }
 
-    private function modelSimilarity(?string $left, ?string $right): float
+    /**
+     * Подстрока в обе стороны по нормализованной строке «бренд + модель»:
+     * «Apple iPhone 17 Pro Max» и «iPhone 17 Pro Max (IMEI)» совпадают.
+     * Память, RAM, цвет и SIM проверяются отдельно, их модель не перекрывает.
+     */
+    private function modelsMatch(ProductData $kaspi, ProductData $bitrix): bool
     {
-        $leftText = implode(' ', $this->modelTokens($left));
-        $rightText = implode(' ', $this->modelTokens($right));
+        $kaspiHasModel = $this->normalizeModel($kaspi->model) !== '';
+        $bitrixHasModel = $this->normalizeModel($bitrix->model) !== '';
 
-        if ($leftText === '' && $rightText === '') {
+        if (! $kaspiHasModel || ! $bitrixHasModel) {
+            return $kaspiHasModel === $bitrixHasModel;
+        }
+
+        $kaspiKey = $this->modelKey($kaspi);
+        $bitrixKey = $this->modelKey($bitrix);
+
+        return str_contains($kaspiKey, $bitrixKey) || str_contains($bitrixKey, $kaspiKey);
+    }
+
+    private function modelSimilarity(ProductData $kaspi, ProductData $bitrix): float
+    {
+        $kaspiKey = $this->modelKey($kaspi);
+        $bitrixKey = $this->modelKey($bitrix);
+
+        if ($kaspiKey === '' && $bitrixKey === '') {
             return 100.0;
         }
 
-        if ($leftText === '' || $rightText === '') {
+        if ($kaspiKey === '' || $bitrixKey === '') {
             return 0.0;
         }
 
-        similar_text($leftText, $rightText, $percent);
+        similar_text($kaspiKey, $bitrixKey, $percent);
 
         return $percent;
     }
 
-    /**
-     * @return array<int, string>
-     */
-    private function modelTokens(?string $model): array
+    private function modelKey(ProductData $product): string
     {
-        $model = mb_strtolower(trim((string) $model));
+        return $this->normalizeModel(trim(($product->brand ?? '').' '.($product->model ?? '')));
+    }
+
+    /**
+     * «Apple iPhone 17 Pro-Max (350145977598027)» → «appleiphone17promax».
+     */
+    private function normalizeModel(?string $model): string
+    {
+        $model = mb_strtolower((string) $model);
         $model = str_replace('ё', 'е', $model);
+        $model = preg_replace('/\([^)]*\)/u', ' ', $model) ?? $model;
         $model = str_replace(['wi-fi', 'wi fi'], ' ', $model);
-        $model = preg_replace('/[^a-z0-9а-я\s]+/u', ' ', $model) ?? $model;
-        $model = trim(preg_replace('/\s+/u', ' ', $model) ?? $model);
+        $tokens = preg_split('/[^a-z0-9а-я]+/u', $model, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $tokens = array_filter(
+            $tokens,
+            static fn (string $token): bool => ! in_array($token, self::NOISE_TOKENS, true),
+        );
 
-        if ($model === '') {
-            return [];
-        }
-
-        $tokens = [];
-
-        foreach (explode(' ', $model) as $token) {
-            if ($token === '' || in_array($token, self::NOISE_TOKENS, true)) {
-                continue;
-            }
-
-            $tokens[] = $token;
-        }
-
-        return $tokens;
-    }
-
-    /**
-     * @param  array<int, string>  $tokens
-     * @return array<int, string>
-     */
-    private function numericTokens(array $tokens): array
-    {
-        $numbers = [];
-
-        foreach ($tokens as $token) {
-            if (preg_match_all('/\d+/', $token, $matches) > 0) {
-                array_push($numbers, ...$matches[0]);
-            }
-        }
-
-        return $numbers;
-    }
-
-    /**
-     * @param  array<int, string>  $left
-     * @param  array<int, string>  $right
-     */
-    private function tokensAlign(array $left, array $right): bool
-    {
-        $used = [];
-
-        foreach ($left as $token) {
-            $found = false;
-
-            foreach ($right as $index => $candidate) {
-                if (isset($used[$index]) || ! $this->tokenClose($token, $candidate)) {
-                    continue;
-                }
-
-                $used[$index] = true;
-                $found = true;
-                break;
-            }
-
-            if (! $found) {
-                return false;
-            }
-        }
-
-        return count($used) === count($right);
-    }
-
-    private function tokenClose(string $left, string $right): bool
-    {
-        if ($left === $right) {
-            return true;
-        }
-
-        if (preg_match('/\d/', $left) === 1 || preg_match('/\d/', $right) === 1) {
-            return false;
-        }
-
-        if (abs(mb_strlen($left) - mb_strlen($right)) > 1) {
-            return false;
-        }
-
-        return levenshtein($left, $right) <= 1;
+        return implode('', $tokens);
     }
 
     private function normalizeBrand(?string $brand): string

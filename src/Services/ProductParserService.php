@@ -104,25 +104,52 @@ final readonly class ProductParserService
 
         $working = preg_replace('/\d[\d\s\x{00A0}]*(?:[.,]\d+)?\s*(?:тенге|тг)\.?/u', ' ', $working) ?? $working;
         $working = preg_replace('/Итого\s*:.*/u', ' ', $working) ?? $working;
-        $working = str_replace(['(', ')', '[', ']'], ' ', $working);
-        $working = trim(preg_replace('/\s+/u', ' ', $working) ?? $working);
+        $modelSource = $this->collapseSpaces(preg_replace('/\([^)]*\)|\[[^\]]*\]/u', ' ', $working) ?? $working);
+        $working = $this->collapseSpaces(str_replace(['(', ')', '[', ']'], ' ', $working));
 
-        $normalized = $this->normalizeText($working);
-        [$ram, $storage, $normalized] = $this->pullMemory($normalized);
-        [$color, $normalized] = $this->pullColor($normalized);
-        [$brand, $modelNormalized] = $this->pullBrand($normalized);
-        $model = $this->restoreCasing($working, $modelNormalized);
+        $specs = $this->pullSpecs($this->normalizeText($working));
+        $modelNormalized = $this->pullSpecs($this->normalizeText($modelSource))['rest'];
+        $model = $this->restoreCasing($modelSource, $modelNormalized);
 
         return new ProductData(
-            brand: $brand,
+            brand: $specs['brand'],
             model: $model !== '' ? $model : null,
-            ram: $ram,
-            storage: $storage,
-            color: $color,
+            ram: $specs['ram'],
+            storage: $specs['storage'],
+            color: $specs['color'],
             imei: $imei,
             originalName: $original,
             quantity: $quantity ?? $textQuantity,
+            sim: $specs['sim'],
         );
+    }
+
+    /**
+     * Характеристики ищутся по всему названию, включая скобки.
+     * Модель берётся из названия без скобок, поэтому пропускается через те же шаги отдельно.
+     *
+     * @return array{ram: ?int, storage: ?int, color: ?string, sim: ?string, brand: ?string, rest: string}
+     */
+    private function pullSpecs(string $normalized): array
+    {
+        [$ram, $storage, $normalized] = $this->pullMemory($normalized);
+        [$color, $normalized] = $this->pullColor($normalized);
+        [$sim, $normalized] = $this->pullSim($normalized);
+        [$brand, $rest] = $this->pullBrand($normalized);
+
+        return [
+            'ram' => $ram,
+            'storage' => $storage,
+            'color' => $color,
+            'sim' => $sim,
+            'brand' => $brand,
+            'rest' => $rest,
+        ];
+    }
+
+    private function collapseSpaces(string $value): string
+    {
+        return trim(preg_replace('/\s+/u', ' ', $value) ?? $value);
     }
 
     private function prepareKaspiText(string $text): string
@@ -204,6 +231,37 @@ final readonly class ProductParserService
             $normalized = trim(preg_replace('/\s+/u', ' ', $normalized) ?? $normalized);
 
             return [$canonical, $normalized];
+        }
+
+        return [null, $normalized];
+    }
+
+    /**
+     * Порядок важен: «nano-SIM + eSIM» и «Dual eSIM» проверяются раньше, чем «SIM» и «eSIM» по отдельности.
+     *
+     * @return array{0: ?string, 1: string}
+     */
+    private function pullSim(string $normalized): array
+    {
+        $sim = '(?:sim|сим)';
+        $esim = '(?:e[\s-]?'.$sim.'|е[\s-]?сим)';
+        $variants = [
+            'SIM+eSIM' => '(?:nano[\s-]?)?'.$sim.'\s*\+\s*'.$esim,
+            'eSIM' => '(?:dual\s+)?'.$esim,
+            'Dual SIM' => '(?:dual[\s-]?'.$sim.'|2[\s-]?'.$sim.')',
+            'SIM' => '(?:single[\s-]?'.$sim.'|1[\s-]?'.$sim.'|nano[\s-]?'.$sim.')',
+        ];
+
+        foreach ($variants as $canonical => $body) {
+            $pattern = '/(?<![\p{L}\p{N}])'.$body.'(?![\p{L}\p{N}])/u';
+
+            if (preg_match($pattern, $normalized) !== 1) {
+                continue;
+            }
+
+            $normalized = preg_replace($pattern, ' ', $normalized, 1) ?? $normalized;
+
+            return [$canonical, $this->collapseSpaces($normalized)];
         }
 
         return [null, $normalized];

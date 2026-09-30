@@ -63,7 +63,7 @@ final class Application
         $service = new DealProductCheckService(
             $bitrix,
             $parser,
-            new ProductComparisonService($settings->modelSimilarityThreshold),
+            new ProductComparisonService(),
             $notifier,
             $hasher,
             $settings,

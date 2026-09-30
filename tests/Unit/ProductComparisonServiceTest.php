@@ -73,33 +73,105 @@ final class ProductComparisonServiceTest extends TestCase
         $this->assertTrue($result['match']);
     }
 
-    public function test_fe_variant_does_not_match(): void
+    public function test_model_matches_by_substring_when_brand_is_missing_in_bitrix(): void
     {
         $result = $this->compareNames(
-            'Samsung Galaxy S26 Ultra 12 ГБ/256 ГБ черный',
-            'Samsung Galaxy S26 Ultra FE 12 ГБ/256 ГБ черный',
+            'Apple Iphone 17 pro max',
+            'Iphone 17 pro max (350145977598027)',
+        );
+
+        $this->assertTrue($result['match']);
+        $this->assertSame([], $result['differences']);
+    }
+
+    public function test_model_substring_works_in_both_directions(): void
+    {
+        $comparison = new ProductComparisonService();
+        $short = new ProductData(null, 'iPhone 17 Pro Max', 12, 256, 'черный');
+        $long = new ProductData('Apple', 'iPhone 17 Pro Max', 12, 256, 'черный');
+
+        $this->assertTrue($comparison->compare([$short], [$long])['match']);
+        $this->assertTrue($comparison->compare([$long], [$short])['match']);
+    }
+
+    public function test_model_normalization_ignores_separators_parentheses_and_yo(): void
+    {
+        $comparison = new ProductComparisonService();
+        $kaspi = new ProductData('Apple', 'iPhone 17 Pro-Max', 12, 256, 'черный');
+        $bitrix = new ProductData(null, 'iphone17, pro.max (A3257)', 12, 256, 'черный');
+
+        $this->assertTrue($comparison->compare([$kaspi], [$bitrix])['match']);
+        $this->assertTrue($comparison->compare(
+            [new ProductData(null, 'Телефон Ёлка', null, null, null)],
+            [new ProductData(null, 'телефон елка', null, null, null)],
+        )['match']);
+    }
+
+    public function test_model_substring_does_not_override_storage_mismatch(): void
+    {
+        $result = $this->compareNames(
+            'Apple Iphone 17 pro max 12 ГБ/256 ГБ черный',
+            'Iphone 17 pro max 12 ГБ/512 ГБ черный (350145977598027)',
+        );
+
+        $this->assertFalse($result['match']);
+        $this->assertCount(1, $result['differences']);
+        $this->assertSame('storage', $result['differences'][0]['field']);
+        $this->assertSame(256, $result['differences'][0]['kaspi']);
+        $this->assertSame(512, $result['differences'][0]['bitrix']);
+    }
+
+    public function test_model_substring_does_not_override_ram_and_color_mismatch(): void
+    {
+        $result = $this->compareNames(
+            'Apple Iphone 17 pro max 8 ГБ/256 ГБ черный',
+            'Iphone 17 pro max 12 ГБ/256 ГБ белый',
+        );
+
+        $this->assertFalse($result['match']);
+        $this->assertSame(['ram', 'color'], array_column($result['differences'], 'field'));
+    }
+
+    public function test_sim_mismatch_is_reported_when_both_sides_specify_it(): void
+    {
+        $result = $this->compareNames(
+            'Apple iPhone 17 Pro Max 12 ГБ/256 ГБ черный eSIM',
+            'Apple iPhone 17 Pro Max 12 ГБ/256 ГБ черный nano-SIM + eSIM',
+        );
+
+        $this->assertFalse($result['match']);
+        $this->assertCount(1, $result['differences']);
+        $this->assertSame('sim', $result['differences'][0]['field']);
+        $this->assertSame('eSIM', $result['differences'][0]['kaspi']);
+        $this->assertSame('SIM+eSIM', $result['differences'][0]['bitrix']);
+        $this->assertSame('SIM: Kaspi eSIM / Bitrix SIM+eSIM', $result['differences'][0]['message']);
+    }
+
+    public function test_sim_is_ignored_when_only_one_side_specifies_it(): void
+    {
+        $result = $this->compareNames(
+            'Samsung Galaxy S26 Ultra 12 ГБ/256 ГБ черный Dual SIM',
+            'Samsung Galaxy S26 Ultra, 12 ГБ/256 GB, черный (350145977598027)',
+        );
+
+        $this->assertTrue($result['match']);
+    }
+
+    public function test_different_models_do_not_match(): void
+    {
+        $result = $this->compareNames(
+            'Apple iPhone 17 Pro Max 12 ГБ/256 ГБ черный',
+            'Apple iPhone 16 Pro Max 12 ГБ/256 ГБ черный',
         );
 
         $this->assertFalse($result['match']);
         $this->assertSame('model', $result['differences'][0]['field']);
     }
 
-    public function test_similarity_threshold_rejects_a_short_typo_when_set_to_100(): void
-    {
-        $kaspi = new ProductData('Samsung', 'Galaxy S26 Ultr', 12, 256, 'черный');
-        $bitrix = new ProductData('Samsung', 'Galaxy S26 Ultra', 12, 256, 'черный');
-
-        $strict = new ProductComparisonService(100);
-        $normal = new ProductComparisonService(90);
-
-        $this->assertFalse($strict->compare([$kaspi], [$bitrix])['match']);
-        $this->assertTrue($normal->compare([$kaspi], [$bitrix])['match']);
-    }
-
     public function test_products_match_by_best_characteristics_not_by_array_position(): void
     {
         $parser = self::parser();
-        $comparison = new ProductComparisonService(90);
+        $comparison = new ProductComparisonService();
 
         $kaspi = $parser->parseKaspiProducts(<<<'TEXT'
 Номер товара 1. Samsung Galaxy S26 Ultra 12 ГБ/256 ГБ черный, 1 шт, 578855.00 тенге.
@@ -126,7 +198,7 @@ TEXT);
     public function test_quantity_mismatch_is_reported(): void
     {
         $parser = self::parser();
-        $comparison = new ProductComparisonService(90);
+        $comparison = new ProductComparisonService();
 
         $result = $comparison->compare(
             $parser->parseKaspiProducts('Номер товара 1. Apple AirPods Pro 2 белый, 2 шт, 120000 тенге.'),
@@ -148,7 +220,7 @@ TEXT);
     {
         $parser = self::parser();
 
-        return (new ProductComparisonService(90))->compare(
+        return (new ProductComparisonService())->compare(
             [$parser->parse($kaspi)],
             [$parser->parse($bitrix)],
         );

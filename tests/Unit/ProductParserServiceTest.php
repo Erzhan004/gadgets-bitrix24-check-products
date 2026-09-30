@@ -113,6 +113,39 @@ TEXT);
         $this->assertSame(2, $products[0]->quantity);
     }
 
+    #[DataProvider('simFormats')]
+    public function test_sim_is_parsed_into_its_own_field(string $name, ?string $sim): void
+    {
+        $product = $this->parser()->parse($name);
+
+        $this->assertSame($sim, $product->sim);
+        $this->assertSame('iPhone 17 Pro Max', $product->model);
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: ?string}>
+     */
+    public static function simFormats(): array
+    {
+        return [
+            'esim only' => ['Apple iPhone 17 Pro Max 256 ГБ/12 ГБ черный eSIM', 'eSIM'],
+            'dual esim' => ['Apple iPhone 17 Pro Max Dual eSIM 12 ГБ/256 ГБ', 'eSIM'],
+            'nano sim plus esim' => ['Apple iPhone 17 Pro Max 12 ГБ/256 ГБ nano-SIM + eSIM', 'SIM+eSIM'],
+            'dual sim' => ['Apple iPhone 17 Pro Max Dual SIM 12 ГБ/256 ГБ', 'Dual SIM'],
+            'two sim' => ['Apple iPhone 17 Pro Max 12 ГБ/256 ГБ 2 SIM', 'Dual SIM'],
+            'no sim' => ['Apple iPhone 17 Pro Max 12 ГБ/256 ГБ черный', null],
+        ];
+    }
+
+    public function test_model_drops_everything_in_parentheses(): void
+    {
+        $product = $this->parser()->parse('Apple iPhone 17 Pro Max (A3257) 12 ГБ/256 ГБ (черный)');
+
+        $this->assertSame('iPhone 17 Pro Max', $product->model);
+        $this->assertSame('черный', $product->color);
+        $this->assertSame(256, $product->storage);
+    }
+
     public function test_color_alias_does_not_match_inside_brand(): void
     {
         $product = $this->parser()->parse('Redmi Note 13 8 ГБ/256 ГБ синий');

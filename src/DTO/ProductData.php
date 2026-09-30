@@ -15,6 +15,7 @@ final readonly class ProductData
         public ?string $imei = null,
         public ?string $originalName = null,
         public ?int $quantity = null,
+        public ?string $sim = null,
     ) {}
 
     public function summary(): string
@@ -42,6 +43,10 @@ final readonly class ProductData
             $parts[] = $this->color;
         }
 
+        if ($this->sim !== null && $this->sim !== '') {
+            $parts[] = $this->sim;
+        }
+
         $summary = trim(implode(' ', $parts));
 
         if ($summary !== '') {
@@ -60,7 +65,8 @@ final readonly class ProductData
      *     color: ?string,
      *     imei: ?string,
      *     original_name: ?string,
-     *     quantity: ?int
+     *     quantity: ?int,
+     *     sim: ?string
      * }
      */
     public function toArray(): array
@@ -74,6 +80,7 @@ final readonly class ProductData
             'imei' => $this->imei,
             'original_name' => $this->originalName,
             'quantity' => $this->quantity,
+            'sim' => $this->sim,
         ];
     }
 }
